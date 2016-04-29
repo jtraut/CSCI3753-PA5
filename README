@@ -89,6 +89,9 @@ Mount fusexmp on existing directory and list (ls) mirrored root directory (/)
 
 Unmount a FUSE filesystem
  fusermount -u <Mount Point>
+ 
+***Encrypted File System***
+ ./pa5-encfs <Passphrase> <Mirror Dir> <Mount Point>
 
 ***OpenSSL Examples***
 

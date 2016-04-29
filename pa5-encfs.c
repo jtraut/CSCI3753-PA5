@@ -64,12 +64,12 @@ static void mirdir(char mpath[PATH_MAX], const char *path)
 }
 
 int crypt_status(const char *path)
-{
+{	
 	int res = 0; //return 1 if encryption xattr is set
 	char value[5]; //can be true or false
 	getxattr(path, FLAG_NAME, value, sizeof("false"));
-	if(strcmp(value, "true")) res = 1;
-	
+	if(!strcmp(value, "true")) res = 1;
+
 	return res;
 }
 
@@ -323,9 +323,11 @@ static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
 	inptr = fopen(mpath, "r");
 	outptr = tmpfile();
 	
+	fseek(inptr, 0, SEEK_END); //check for existing content
+	
 	if(inptr == NULL || outptr == NULL) return -errno;
 	
-	if(crypt_status(mpath)) action = 0; //if currently encrypted, then decrypt and read
+	if(crypt_status(mpath) && ftell(inptr) > 0) action = 0; //if currently encrypted, then decrypt and read
 	else action = -1; //else just pass-through
 	
 	/* int do_crypt(FILE* in, FILE* out, int action, char* key_str)
@@ -336,9 +338,10 @@ static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
 	 *	 char* key_str : C-string containing passpharse from which key is derived
 	 * Return: FAILURE on error, SUCCESS on success
 	 */	
+	rewind(inptr);
 	if(!do_crypt(inptr, outptr, action, VFS_DATA->key)) return -errno;
 	
-	//change file position to the offset, starting from beginning of file (SEEK_SET)
+	//change file position to the offset
 	fseeko(outptr, offset, SEEK_SET); //same as fseek but take offset of type off_t
 	
 	//now ready to read to the buffer
@@ -353,7 +356,7 @@ static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
 static int xmp_write(const char *path, const char *buf, size_t size,
 		     off_t offset, struct fuse_file_info *fi)
 {
-	FILE *inptr, *outptr;
+	FILE *inptr, *outptr; //file streams 
 	int res, action;
 	char mpath[PATH_MAX];
 	mirdir(mpath, path);
@@ -362,23 +365,27 @@ static int xmp_write(const char *path, const char *buf, size_t size,
 	inptr = fopen(mpath, "rw+");
 	outptr = tmpfile();
 	
-	if(inptr == NULL || outptr == NULL) return -errno;
+	fseek(inptr, 0, SEEK_END); //checking for content
 	
-	//check if need to encrypt before writing to mirror
-	if(crypt_status(mpath)) action = 1; //if encrypted file, then data writing also should be encrypted
+	if(inptr == NULL || outptr == NULL) return -errno;
+		
+	//check if there is existing encrypted content... maintain "all-or-nothing" 
+	if(crypt_status(mpath) && ftell(inptr) > 0) action = 0; //if encrypted then need to decrypt the existing content for copying purposes
 	else action = -1; //or pass through
 	
 	//first write all previous data to the out file
-	if(!do_crypt(inptr, outptr, 0, VFS_DATA->key)) return -errno;
-	//be more careful here, shouldnt decrypt file thats not encrypted 
+	rewind(inptr);
+	if(!do_crypt(inptr, outptr, action, VFS_DATA->key)) return -errno;	
 	
 	//change file position to offset, then write from buffer to stream
 	fseeko(outptr, offset, SEEK_SET);
 	res = fwrite(buf, sizeof(char), size, outptr);
 	if(res == -1) return -errno;
 	
-	//now copy all data in outstream back (old + new)
-	fseek(outptr, 0, SEEK_SET);
+	rewind(inptr);
+	rewind(outptr);
+	//now copy new data in outstream back
+	if(crypt_status(mpath)) action = 1; //something around here needs fixing
 	if(!do_crypt(outptr, inptr, action, VFS_DATA->key)) return -errno;
 	
 	fclose(inptr);
@@ -406,8 +413,6 @@ static int xmp_create(const char* path, mode_t mode, struct fuse_file_info* fi)
 	char mpath[PATH_MAX];
 	mirdir(mpath, path);
 	
-	printf("mpath is %s\n",mpath);
-	printf("mountpt is %s\n",VFS_DATA->mountpt);
     int res;
     res = creat(mpath, mode);
     if(res == -1)
